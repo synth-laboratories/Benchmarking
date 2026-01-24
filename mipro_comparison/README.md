@@ -101,28 +101,28 @@ The task app handles:
 
 ## Results
 
-Results are saved to `results/` directory as JSON:
+### Benchmark Comparison (Jan 2026)
+
+| Metric | Synth MIPRO | DSPy MIPROv2 |
+|--------|-------------|--------------|
+| Model | gpt-4.1-nano | gpt-4.1-nano |
+| Best Score | 60% | 92% |
+| Elapsed | 38.1s | 75.9s |
+| Train Size | 50 | 50 |
+| Val Size | 25 | 25 |
+| Mode | instruction-only | few-shot + instruction |
+
+**Notes:**
+- DSPy uses few-shot examples in addition to instruction tuning
+- Synth MIPRO currently only supports instruction-only optimization
+- Results saved to `results/` directory as JSON
+
+### Output Files
 
 ```
 results/
-  banking77_synth_mipro_20260123_184314.json
-  banking77_dspy_mipro_20260123_185000.json
-```
-
-Example result:
-```json
-{
-  "method": "synth_mipro",
-  "status": "succeeded",
-  "elapsed_seconds": 20.3,
-  "config": {
-    "model": "gpt-4.1-nano",
-    "rollouts": 3,
-    "train_size": 5,
-    "val_size": 3
-  },
-  "best_score": 0.8
-}
+  banking77_synth_mipro_YYYYMMDD_HHMMSS.json
+  banking77_dspy_mipro_YYYYMMDD_HHMMSS.json
 ```
 
 ## Troubleshooting
