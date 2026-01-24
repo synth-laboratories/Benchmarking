@@ -1,0 +1,22 @@
+# Requirements for MIPRO Comparison Benchmark
+
+# DSPy framework (includes MIPROv2)
+dspy-ai>=2.4.0
+
+# Synth AI SDK (for Synth MIPRO)
+# Requires 0.7.0+ for improved Cloudflare tunnel support
+synth-ai>=0.7.0
+
+# Datasets
+datasets>=2.14.0
+
+# HTTP client
+httpx>=0.24.0
+
+# OpenAI client
+openai>=1.0.0
+
+# Development
+pytest>=7.0.0
+black>=23.0.0
+mypy>=1.0.0
