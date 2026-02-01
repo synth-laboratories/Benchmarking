@@ -3,7 +3,7 @@
 Run Banking77 MIPRO Comparison using Synth SDK
 
 This script runs MIPRO optimization on Banking77 using the synth-ai SDK directly.
-Based on synth-ai/demos/mipro_banking77/run_demo.py
+Based on demos/mipro_banking77/run_demo.py
 
 Usage:
     python run_synth_mipro_banking77.py

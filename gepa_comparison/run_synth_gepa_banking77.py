@@ -3,7 +3,7 @@
 Run Banking77 GEPA Comparison using Synth SDK
 
 This script runs GEPA optimization on Banking77 using the synth-ai SDK directly.
-Based on synth-ai/demos/gepa_banking77/run_demo.py
+Based on demos/gepa_banking77/run_demo.py
 
 Usage:
     python run_synth_gepa_banking77.py

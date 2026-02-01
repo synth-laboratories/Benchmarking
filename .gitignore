@@ -1,0 +1,60 @@
+# Environment variables
+.env
+.env.*
+
+# Cache
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Results
+results/
+*.json
+*.txt
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+*_executed.ipynb
+demo_prod_executed.ipynb
+
+# Tunnels
+.cloudflared/
+*.tunnel
