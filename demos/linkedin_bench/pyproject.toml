@@ -1,0 +1,20 @@
+[project]
+name = "gepa-browser-automation"
+version = "0.1.0"
+description = "GEPA optimization for site-specific browser automation skills using Synth, Claude Code, and Kernel cloud browsers"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic>=0.77.0",
+    "fastapi>=0.128.0",
+    "httpx>=0.28.1",
+    "kernel>=0.28.0",
+    "python-dotenv>=1.2.1",
+    "synth-ai==0.7.8",
+    "uvicorn>=0.40.0",
+]
+
+[project.scripts]
+run-eval = "linkedin_bench.cli:run_eval"
+run-gepa = "linkedin_bench.cli:run_gepa"
+

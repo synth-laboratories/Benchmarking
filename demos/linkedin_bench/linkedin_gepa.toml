@@ -1,0 +1,118 @@
+# GEPA Configuration for LinkedIn Corporate Monitoring Skill Optimization
+#
+# This configures GEPA (Generative Evolutionary Prompt Adaptation) to optimize
+# the LinkedIn skill file for better reliability and speed.
+#
+# The skill content is written to ~/.claude/skills/linkedin.com/SKILL.md
+# inside Kernel browser VMs, where Claude Code automatically discovers it.
+
+[prompt_learning]
+algorithm = "gepa"
+task_app_url = "http://localhost:8030"
+task_app_id = "linkedin_bench"
+
+# Policy configuration - the proposer model for mutations
+# Note: The actual task execution uses Claude Code via the task app
+[prompt_learning.policy]
+model = "gpt-4o"
+provider = "openai"
+inference_mode = "synth_hosted"
+
+# Timeout for rollouts (browser automation takes longer than code execution)
+[prompt_learning.policy.config]
+timeout = 600  # 10 minutes per rollout (browser automation is slow)
+
+# Initial prompt template
+# The skill_content wildcard is what GEPA optimizes
+[prompt_learning.initial_prompt]
+id = "linkedin_skill"
+name = "LinkedIn Corporate Monitoring Skill"
+
+# The skill content that gets written to SKILL.md
+# GEPA will mutate and evolve this content
+[[prompt_learning.initial_prompt.messages]]
+role = "system"
+pattern = "{skill_content}"
+order = 0
+
+# The task prompt (varies per task, not optimized)
+[[prompt_learning.initial_prompt.messages]]
+role = "user"
+pattern = "{task_prompt}"
+order = 1
+
+[prompt_learning.initial_prompt.wildcards]
+skill_content = "REQUIRED"
+task_prompt = "REQUIRED"
+
+# RLM v1 verifier - uses model-based scoring for rollout evaluation
+[prompt_learning.verifier]
+mode = "verifier"
+model = "gemini-2.5-flash"
+
+# GEPA algorithm settings
+[prompt_learning.gepa]
+env_name = "linkedin_bench"
+proposer_type = "synth"
+proposer_effort = "MEDIUM"
+proposer_output_tokens = "SLOW"
+
+# Unified optimization: mutate skill files via context_overrides instead of
+# injecting into the system prompt. The proposer's instruction_text becomes the
+# content of the mutable_files, delivered to the task app as file artifacts.
+[prompt_learning.gepa.unified_optimization]
+enable_task_app_context_overrides = true
+optimization_target = "context_only"
+mutable_files = ["~/.claude/skills/linkedin.com/SKILL.md"]
+allow_preflight_script = false
+allow_env_vars = false
+
+# Baseline context override — initial file artifact values.
+# run_gepa.py injects the actual initial skill content at runtime.
+[prompt_learning.gepa.baseline_context_override.file_artifacts]
+"~/.claude/skills/linkedin.com/SKILL.md" = "REQUIRED"
+
+# Rollout budget and parallelism
+[prompt_learning.gepa.rollout]
+budget = 1800                # 20 train seeds * 90 candidates (15 initial + 5*15 children)
+max_concurrent = 8           # Parallel rollouts (tuned to avoid tunnel over-capacity)
+minibatch_size = 4           # Rollouts per minibatch
+timeout = 600                # 10 minutes per rollout (browser automation is slow)
+
+# Evaluation seeds (task indices)
+# Need at least 13 seeds total (10 for pareto_set + 3 for feedback)
+# We cover the 10 tasks, then repeat a few for feedback.
+[prompt_learning.gepa.evaluation]
+seeds = [
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+]
+validation_seeds = [
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+]
+validation_top_k = 1
+
+# Mutation settings
+[prompt_learning.gepa.mutation]
+rate = 0.5
+
+# Population settings
+[prompt_learning.gepa.population]
+initial_size = 15             # Starting population (candidates)
+num_generations = 5           # Number of evolution cycles
+children_per_generation = 15  # New variants per generation
+crossover_rate = 0.5
+
+# Archive settings
+[prompt_learning.gepa.archive]
+size = 50
+pareto_set_size = 15
+
+# Token budget
+[prompt_learning.gepa.token]
+max_spend_usd = 250.0        # Budget for GEPA optimization
+counting_model = "claude-3-5-sonnet-20241022"
