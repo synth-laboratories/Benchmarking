@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import yaml
+
 from fastapi import Request
 
 logger = logging.getLogger(__name__)
@@ -701,6 +703,139 @@ if attacker.types.contains(&Type::Fire) {
 
 
 # =============================================================================
+# CONTENT VALIDATION HELPERS
+# =============================================================================
+
+# Patterns that indicate compilation or runtime failures in agent output
+_OUTPUT_FAILURE_PATTERNS = [
+    "error[E",
+    "panicked at",
+    "cannot find",
+    "unresolved import",
+    "mismatched types",
+    "could not compile",
+    "aborting due to",
+]
+
+
+def _unwrap_json_content(content: str, artifact_name: str) -> str:
+    """If *content* looks like a JSON wrapper, extract the ``instruction`` field.
+
+    Some GEPA proposers emit ``{"instruction": "...actual content..."}`` instead
+    of plain text.  This mirrors the LinkedIn bench pattern (lines 247-256).
+    """
+    stripped = content.strip()
+    if not stripped.startswith("{"):
+        return content
+    try:
+        parsed = json.loads(stripped)
+        if isinstance(parsed, dict) and "instruction" in parsed:
+            unwrapped = parsed["instruction"]
+            print(
+                f"  [ARTIFACT] JSON-unwrapped {artifact_name}: "
+                f"{len(content)} -> {len(unwrapped)} chars",
+                flush=True,
+            )
+            return unwrapped
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return content
+
+
+def validate_agents_md(content: str) -> tuple[bool, str, str | None]:
+    """Validate ``AGENTS.md`` content.
+
+    Returns ``(is_valid, cleaned_content, error_message)``.
+    """
+    if not content or not content.strip():
+        return False, content, "agents_md is empty"
+    cleaned = content.strip()
+    if len(cleaned) < 20:
+        return False, cleaned, f"agents_md too short ({len(cleaned)} chars, need >20)"
+    # Auto-fix: prepend markdown header if missing
+    if not cleaned.startswith("#"):
+        cleaned = f"# Agent Instructions\n\n{cleaned}"
+        print("  [ARTIFACT] Auto-prepended markdown header to agents_md", flush=True)
+    return True, cleaned, None
+
+
+def validate_codex_skills(content: str) -> tuple[bool, str, str | None]:
+    """Validate ``.codex/skills.yaml`` content.
+
+    Returns ``(is_valid, cleaned_content, error_message)``.
+    """
+    if not content or not content.strip():
+        return False, content, "codex_skills is empty"
+    cleaned = content.strip()
+    try:
+        parsed = yaml.safe_load(cleaned)
+    except yaml.YAMLError as exc:
+        return False, cleaned, f"codex_skills is not valid YAML: {exc}"
+    if isinstance(parsed, dict) and "skills" not in parsed:
+        print("  [ARTIFACT] WARNING: codex_skills YAML has no 'skills' key", flush=True)
+    return True, cleaned, None
+
+
+def validate_system_prompt(content: str) -> tuple[bool, str, str | None]:
+    """Validate ``system_prompt`` content.
+
+    Returns ``(is_valid, cleaned_content, error_message)``.
+    """
+    if not content or not content.strip():
+        return False, content, "system_prompt is empty"
+    cleaned = content.strip()
+    if len(cleaned) < 30:
+        return False, cleaned, f"system_prompt too short ({len(cleaned)} chars, need >30)"
+    if len(cleaned) > 50_000:
+        print(
+            f"  [ARTIFACT] WARNING: system_prompt is very large ({len(cleaned)} chars)",
+            flush=True,
+        )
+    return True, cleaned, None
+
+
+def detect_output_failures(output: str) -> list[str]:
+    """Scan agent output for known failure patterns.
+
+    Returns a list of matched pattern strings found in *output*.
+    """
+    if not output:
+        return []
+    found: list[str] = []
+    for pattern in _OUTPUT_FAILURE_PATTERNS:
+        if pattern in output:
+            found.append(pattern)
+    return found
+
+
+def _build_validation_error_status(
+    artifact_name: str,
+    error_message: str,
+    override_bundle_id: str | None,
+) -> Any:
+    """Build a ``ContextOverrideStatus`` for a validation failure."""
+    from synth_ai.data.artifacts import (
+        ApplicationErrorType,
+        ApplicationStatus,
+        ContextOverrideStatus,
+        OverrideApplicationError,
+    )
+
+    return ContextOverrideStatus(
+        override_id=override_bundle_id or "override_bundle",
+        overall_status=ApplicationStatus.PARTIAL,
+        errors=[
+            OverrideApplicationError(
+                error_type=ApplicationErrorType.VALIDATION,
+                message=error_message,
+                target=artifact_name,
+                details={},
+            )
+        ],
+    )
+
+
+# =============================================================================
 # AGENT RUNNER (OpenCode + Codex CLI via subprocess)
 # =============================================================================
 
@@ -977,6 +1112,13 @@ enabled = false
 """
     config_file.write_text(config_content)
 
+    # Log full codex config for debugging interceptor issues (Issue 2 safeguard)
+    print(f"  [Codex] Config written to {config_file}:", flush=True)
+    print(f"  [Codex]   inference_url={inference_url}", flush=True)
+    print(f"  [Codex]   base_url={base_url}", flush=True)
+    print(f"  [Codex]   wire_api=responses", flush=True)
+    print(f"  [Codex]   model={model}", flush=True)
+
     cmd = [
         "codex",
         "exec",
@@ -990,14 +1132,20 @@ enabled = false
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
-    env["OPENAI_API_KEY"] = resolve_interceptor_api_key(
+    resolved_key = resolve_interceptor_api_key(
         inference_url=inference_url,
         interceptor_key=api_key,
         openai_key=os.environ.get("OPENAI_API_KEY", ""),
     )
+    env["OPENAI_API_KEY"] = resolved_key
     env["OPENAI_MODEL"] = model
     if inference_url:
         env["OPENAI_BASE_URL"] = base_url
+    print(
+        f"  [Codex]   OPENAI_API_KEY={'(interceptor)' if inference_url and api_key else '(openai)'} "
+        f"len={len(resolved_key)}",
+        flush=True,
+    )
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -1008,10 +1156,34 @@ enabled = false
             env=env,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        stdout_str = stdout.decode("utf-8", errors="replace")
+        stderr_str = stderr.decode("utf-8", errors="replace")
+
+        # Scan stderr for interceptor-specific errors (Issue 2 safeguard)
+        if "expected value at line 1 column 1" in stderr_str:
+            print(
+                f"  [Codex] INTERCEPTOR DIAGNOSTIC: Got 'expected value at line 1' error. "
+                f"This usually means codex sent an empty body to the interceptor. "
+                f"Check that base_url={base_url} resolves to a valid interceptor route.",
+                flush=True,
+            )
+        if "400 Bad Request" in stderr_str:
+            print(
+                f"  [Codex] INTERCEPTOR DIAGNOSTIC: Got 400 from interceptor. "
+                f"inference_url={inference_url} base_url={base_url}",
+                flush=True,
+            )
+        if "Empty request body" in stderr_str:
+            print(
+                f"  [Codex] INTERCEPTOR DIAGNOSTIC: Interceptor rejected empty body. "
+                f"Codex may be sending pre-flight or health check requests.",
+                flush=True,
+            )
+
         return {
             "success": proc.returncode == 0,
-            "stdout": stdout.decode("utf-8", errors="replace"),
-            "stderr": stderr.decode("utf-8", errors="replace"),
+            "stdout": stdout_str,
+            "stderr": stderr_str,
         }
     except TimeoutError:
         proc.kill()
@@ -1356,6 +1528,24 @@ async def run_rollout(request: RolloutRequest, fastapi_request: Request) -> Roll
     new_overrides = request.context_overrides
     override_bundle_id = request.override_bundle_id
     start = time.perf_counter()
+    validation_errors: list[Any] = []
+
+    # [CTX] Log context overrides presence
+    if new_overrides:
+        print(f"  [CTX] context_overrides present: {len(new_overrides)} override(s)", flush=True)
+        for i, override in enumerate(new_overrides):
+            ov = override if isinstance(override, dict) else (override.model_dump() if hasattr(override, "model_dump") else {})
+            fa = ov.get("file_artifacts") or {}
+            ev = ov.get("env_vars") or {}
+            pf = ov.get("preflight_script")
+            print(
+                f"    [CTX] override[{i}]: file_artifacts={len(fa)} "
+                f"(sizes: {', '.join(f'{k}={len(str(v))}' for k, v in fa.items())}) "
+                f"env_vars={len(ev)} preflight={'yes' if pf else 'no'}",
+                flush=True,
+            )
+    else:
+        print("  [CTX] No context_overrides in request", flush=True)
 
     # Get instance - either from config, difficulty split, or by seed
     difficulty_split = env_config.get("difficulty_split")
@@ -1425,15 +1615,80 @@ async def run_rollout(request: RolloutRequest, fastapi_request: Request) -> Roll
         timeout,
     )
 
-    # UNIFIED CONTEXT ENGINEERING: Extract context artifacts (or use defaults)
-    system_prompt = legacy_override.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
+    # UNIFIED CONTEXT ENGINEERING: Extract context artifacts
+    # Priority: context_overrides file_artifacts > legacy dict > defaults
+    agents_md: str | None = None
+    codex_skills: str | None = None
+
+    if new_overrides:
+        # Extract file artifacts from unified context_overrides (highest priority)
+        for override in new_overrides:
+            ov = override if isinstance(override, dict) else (override.model_dump() if hasattr(override, "model_dump") else {})
+            fa = ov.get("file_artifacts") or {}
+            if "AGENTS.md" in fa and fa["AGENTS.md"]:
+                agents_md = _unwrap_json_content(fa["AGENTS.md"], "AGENTS.md")
+            if ".codex/skills.yaml" in fa and fa[".codex/skills.yaml"]:
+                codex_skills = _unwrap_json_content(fa[".codex/skills.yaml"], ".codex/skills.yaml")
+
+    # System prompt, architecture, etc. come through legacy dict path
+    system_prompt = _unwrap_json_content(
+        legacy_override.get("system_prompt", DEFAULT_SYSTEM_PROMPT), "system_prompt"
+    )
     architecture_guide = legacy_override.get("architecture_guide", DEFAULT_ARCHITECTURE_GUIDE)
     reference_snippets = legacy_override.get("reference_snippets", DEFAULT_REFERENCE_SNIPPETS)
     hooks_documentation = legacy_override.get("hooks_documentation", DEFAULT_HOOKS_DOCUMENTATION)
 
-    # Agent-specific file artifacts (for GEPA optimization of AGENTS.md, skills, etc.)
-    agents_md = legacy_override.get("agents_md")  # Optional: AGENTS.md content
-    codex_skills = legacy_override.get("codex_skills")  # Optional: .codex/skills.yaml content
+    # Fall back to legacy dict for agents_md / codex_skills if not in context_overrides
+    if agents_md is None:
+        raw = legacy_override.get("agents_md")
+        if raw:
+            agents_md = _unwrap_json_content(raw, "agents_md")
+    if codex_skills is None:
+        raw = legacy_override.get("codex_skills")
+        if raw:
+            codex_skills = _unwrap_json_content(raw, "codex_skills")
+
+    # Step 3: Validate extracted artifacts
+    if system_prompt:
+        ok, system_prompt, err = validate_system_prompt(system_prompt)
+        if not ok:
+            print(f"  [ARTIFACT] VALIDATION FAILED system_prompt: {err}", flush=True)
+            validation_errors.append(
+                _build_validation_error_status("system_prompt", err or "invalid", override_bundle_id)
+            )
+            system_prompt = DEFAULT_SYSTEM_PROMPT
+        elif err is None:
+            print(f"  [ARTIFACT] system_prompt valid ({len(system_prompt)} chars)", flush=True)
+
+    if agents_md:
+        ok, agents_md, err = validate_agents_md(agents_md)
+        if not ok:
+            print(f"  [ARTIFACT] VALIDATION FAILED agents_md: {err}", flush=True)
+            validation_errors.append(
+                _build_validation_error_status("agents_md", err or "invalid", override_bundle_id)
+            )
+            agents_md = None
+        else:
+            print(
+                f"  [ARTIFACT] Using agents_md ({len(agents_md)} chars): "
+                f"{agents_md[:300]}...",
+                flush=True,
+            )
+
+    if codex_skills:
+        ok, codex_skills, err = validate_codex_skills(codex_skills)
+        if not ok:
+            print(f"  [ARTIFACT] VALIDATION FAILED codex_skills: {err}", flush=True)
+            validation_errors.append(
+                _build_validation_error_status("codex_skills", err or "invalid", override_bundle_id)
+            )
+            codex_skills = None
+        else:
+            print(
+                f"  [ARTIFACT] Using codex_skills ({len(codex_skills)} chars): "
+                f"{codex_skills[:300]}...",
+                flush=True,
+            )
 
     print(f"\n{'=' * 60}", flush=True)
     print(f"[engine_bench] ⚡⚡⚡ Running rollout for {instance_id}", flush=True)
@@ -1570,31 +1825,40 @@ async def run_rollout(request: RolloutRequest, fastapi_request: Request) -> Roll
         setup_result = await setup_sandbox(instance_id, work_path)
         sandbox_dir = setup_result.sandbox_dir
 
-        # HACK: Create empty AGENTS.md to stop OpenCode from searching for it in an infinite loop
-        # OpenCode seems to have default behavior to search for this file
+        # Write AGENTS.md: use validated content or default stub
         agents_md_path = sandbox_dir / "AGENTS.md"
-        agents_md_path.write_text("# Agent Instructions\n\nSee the task prompt for instructions.\n")
-        print(f"[engine_bench] ⚡⚡⚡ Created AGENTS.md hack file: {agents_md_path}", flush=True)
-
-        # Apply legacy AGENTS.md / codex_skills overrides (GEPA unified optimization)
         if agents_md:
             agents_md_path.write_text(agents_md)
             print(
-                f"[engine_bench] Applied legacy AGENTS.md override ({len(agents_md)} chars)",
+                f"[engine_bench] Applied AGENTS.md override ({len(agents_md)} chars)",
                 flush=True,
             )
+        else:
+            agents_md_path.write_text("# Agent Instructions\n\nSee the task prompt for instructions.\n")
+            print(f"[engine_bench] Created default AGENTS.md: {agents_md_path}", flush=True)
+
+        # Write codex_skills: use validated content if present
         if codex_skills and agent_type == "codex":
             skills_rel = Path(get_agent_skills_path("codex", global_=False))
             skills_path = sandbox_dir / skills_rel
             skills_path.parent.mkdir(parents=True, exist_ok=True)
             skills_path.write_text(codex_skills)
             print(
-                f"[engine_bench] Applied legacy codex_skills override ({len(codex_skills)} chars)",
+                f"[engine_bench] Applied codex_skills override ({len(codex_skills)} chars)",
                 flush=True,
             )
 
         # Apply new context overrides (AGENTS.md, skills, env vars, preflight scripts)
         if new_overrides:
+            # JSON-unwrap all file_artifacts content before SDK call
+            for override in new_overrides:
+                ov = override if isinstance(override, dict) else (override.model_dump() if hasattr(override, "model_dump") else {})
+                fa = ov.get("file_artifacts")
+                if fa and isinstance(fa, dict):
+                    for key in list(fa.keys()):
+                        if isinstance(fa[key], str):
+                            fa[key] = _unwrap_json_content(fa[key], key)
+
             agent_enum = AgentType.CODEX if agent_type == "codex" else AgentType.OPENCODE
             try:
                 override_application_results = await apply_context_overrides(
@@ -1730,6 +1994,27 @@ async def run_rollout(request: RolloutRequest, fastapi_request: Request) -> Roll
                     if stderr_full.strip():
                         print(f"  [OpenCode] ⚡⚡⚡ stderr (full):\n{stderr_full}", flush=True)
 
+        # [OUTPUT] Log last meaningful lines and detect failure patterns
+        combined_output = (agent_result.get("stdout", "") + "\n" + agent_result.get("stderr", "")).strip()
+        if combined_output:
+            meaningful_lines = [ln for ln in combined_output.splitlines() if ln.strip()]
+            tail = meaningful_lines[-10:] if len(meaningful_lines) > 10 else meaningful_lines
+            print("  [OUTPUT] Last lines from agent:", flush=True)
+            for ln in tail:
+                print(f"    [OUTPUT] {ln}", flush=True)
+
+            failures = detect_output_failures(combined_output)
+            if failures:
+                print(
+                    f"  [OUTPUT] WARNING: detected failure patterns: {failures}",
+                    flush=True,
+                )
+            if "todo!()" in combined_output:
+                print(
+                    "  [OUTPUT] WARNING: todo!() still appears in output (likely incomplete implementation)",
+                    flush=True,
+                )
+
         # Use card_file_path from setup_result if available, otherwise derive it
         card_file_path = setup_result.card_file_path
         if not card_file_path:
@@ -1842,6 +2127,13 @@ async def run_rollout(request: RolloutRequest, fastapi_request: Request) -> Roll
 
     latency_ms = (time.perf_counter() - start) * 1000.0
     trace_correlation_id = policy_config.get("trace_correlation_id", request.trace_correlation_id)
+
+    # Merge validation errors into override_application_results
+    if validation_errors:
+        if override_application_results is None:
+            override_application_results = validation_errors
+        else:
+            override_application_results = list(override_application_results) + validation_errors
 
     # Return RolloutResponse - let validation hydrate traces from interceptor
     # OpenCode's LLM calls go through interceptor (via OPENAI_BASE_URL env var)

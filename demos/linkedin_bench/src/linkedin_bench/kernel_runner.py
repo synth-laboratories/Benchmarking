@@ -213,6 +213,7 @@ async def run_claude_code(
     session_id: str,
     task_prompt: str,
     anthropic_api_key: str,
+    claude_model: str | None = None,
     timeout: int = 120,
     verbose: bool = True,
     interceptor_base_url: str | None = None,
@@ -253,6 +254,8 @@ async def run_claude_code(
     
     # Build script that runs Claude with streaming JSON output
     # When interceptor is configured, route through Synth API interceptor
+    claude_model = claude_model or os.environ.get("CLAUDE_MODEL")
+
     if interceptor_base_url:
         auth_token = interceptor_auth_token or anthropic_api_key
         env_block = f"""export ANTHROPIC_BASE_URL='{interceptor_base_url}'
@@ -261,6 +264,9 @@ export ANTHROPIC_AUTH_TOKEN='{auth_token}'"""
             print(f"  Using interceptor: {interceptor_base_url}", flush=True)
     else:
         env_block = f"export ANTHROPIC_API_KEY='{anthropic_api_key}'"
+
+    if claude_model:
+        env_block += f"\nexport CLAUDE_MODEL='{claude_model}'"
 
     script = f'''#!/bin/bash
 export HOME=/home/kernel
@@ -442,6 +448,7 @@ async def run_task_in_kernel(
     timeout: int = 120,
     api_key: str | None = None,
     anthropic_api_key: str | None = None,
+    claude_model: str | None = None,
     interceptor_base_url: str | None = None,
     interceptor_auth_token: str | None = None,
 ) -> RunResult:
@@ -517,6 +524,7 @@ async def run_task_in_kernel(
             session_id,
             task_prompt,
             anthropic_api_key,
+            claude_model=claude_model,
             timeout=timeout,
             interceptor_base_url=interceptor_base_url,
             interceptor_auth_token=interceptor_auth_token,

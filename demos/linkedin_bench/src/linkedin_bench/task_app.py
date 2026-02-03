@@ -219,8 +219,14 @@ async def run_rollout(request: RolloutRequest, fastapi_request: Request) -> Roll
             interceptor_base_url = f"{base_url}/{correlation_id}"
         else:
             interceptor_base_url = base_url
-        # Use SYNTH_API_KEY for interceptor auth, fall back to ANTHROPIC_API_KEY
-        interceptor_auth_token = os.environ.get("SYNTH_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+        # Use SynthTunnel worker token when available (required for tunneled backend),
+        # otherwise fall back to SYNTH_API_KEY or ANTHROPIC_API_KEY.
+        interceptor_auth_token = (
+            os.environ.get("INTERCEPTOR_WORKER_TOKEN")
+            or os.environ.get("SYNTH_TUNNEL_WORKER_TOKEN")
+            or os.environ.get("SYNTH_API_KEY")
+            or os.environ.get("ANTHROPIC_API_KEY")
+        )
         print(f"Interceptor URL: {interceptor_base_url}")
 
     # Get skill content from context_overrides (GEPA provides optimized versions)

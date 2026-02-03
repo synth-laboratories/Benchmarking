@@ -158,9 +158,25 @@ uv run python run_gepa.py
 
 The optimized skill will be saved to `output/optimized_skill_<timestamp>.md`.
 
+### Build gold answers from Sonnet runs
+
+To create a gold rubric for GEPA, run **3 Sonnet rollouts per task** and take majority agreement:
+
+```bash
+uv run python scripts/run_sonnet_rollouts.py --runs-per-task 3 --concurrency 5 --model claude-sonnet-4-5-20250929
+uv run python scripts/build_gold_answers.py --rollouts data/sonnet45_runs/rollouts.jsonl
+```
+
+This writes:
+- `data/sonnet45_runs/rollouts.jsonl` (raw run metadata)
+- `data/sonnet45_runs/<task_id>/run_<n>.txt` (raw outputs)
+- `data/gold_answers.json` (majority-vote gold answers)
+
+The verifier will automatically use `data/gold_answers.json` if present.
+
 ## Model Strategy
 
-We will try Claude Code with **Haiku** first for faster, cheaper rollouts. Once we have a working baseline, we will re-run with **Sonnet** for higher accuracy and coverage.
+We will try Claude Code with **Haiku** first for faster, cheaper rollouts. Once we have a working baseline, we will re-run with **Sonnet 4.5** for higher accuracy and coverage.
 
 ## Task Source
 
@@ -172,24 +188,25 @@ https://gist.github.com/rgarcia/b8816e26fe6be17b8bb515ff0559f7e7
 
 ## Tasks
 
-This demo includes 10 LinkedIn corporate monitoring tasks:
+This demo now includes **100 LinkedIn corporate monitoring tasks** derived from the spec.
+They are generated from 10 task families (10 tasks each):
 
-| Task ID | Description | Expected Result |
-|---------|-------------|-----------------|
-| `commenters_stripe_ai_post` | Stripe AI post commenters | List of commenter names + titles |
-| `reactors_datadog_observability` | Datadog observability reactors by function | Engineering/Sales/Marketing counts |
-| `exec_engagement_recent_posts` | Exec commenters on recent Datadog posts | Post URLs with exec names/titles |
-| `notion_eng_leadership_census` | Notion engineering leaders | Names + titles |
-| `figma_to_canva_departures_2024` | Figma → Canva 2024 movers | Five names + current titles |
-| `anthropic_product_new_hires_jan_2026` | Anthropic January 2026 product hires | Names + titles |
-| `anthropic_top_posts_dec_2024` | Anthropic top posts (Dec 2024) | Ranked posts with reactions |
-| `notion_hashtag_frequency` | Notion hashtag counts | Counts for #AI/#hiring/#product |
-| `snowflake_shared_connections` | Snowflake 2nd-degree connections | Count + shared connections |
-| `hubspot_top_followed_employees` | HubSpot top follower counts | Three names + follower counts |
+1. Commenter enumeration on the most recent keyword-matched post
+2. Reactor title breakdowns (Engineering/Sales/Marketing) on keyword posts
+3. Executive engagement on posts from the last 30 days
+4. Engineering leadership census (Eng Managers / Directors)
+5. Departures between two companies in 2024
+6. New hire tracking by month for Product roles
+7. Top posts by engagement in the last 60 days
+8. Hashtag frequency in the last 20 posts (#AI/#hiring/#product)
+9. Shared connections (2nd-degree) counts
+10. Top followed employees at a company
+
+The canonical list lives in `src/linkedin_bench/tasks.py`.
 
 > Note: These tasks are intentionally open-ended. For deterministic scoring, capture
-> post URLs and ground-truth snapshots, then update the `expected` fields in
-> `src/linkedin_bench/tasks.py`.
+> post URLs and ground-truth snapshots, then update the `expected` fields or provide
+> `data/gold_answers.json` for the verifier.
 
 ## Reward Calculation
 

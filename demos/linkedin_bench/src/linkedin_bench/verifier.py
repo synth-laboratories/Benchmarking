@@ -9,10 +9,22 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 import anthropic
 
 from .tasks import Task
+
+GOLD_ANSWER_PATH = Path(__file__).resolve().parents[2] / "data" / "gold_answers.json"
+
+
+def _load_gold_answers() -> dict[str, str]:
+    if not GOLD_ANSWER_PATH.exists():
+        return {}
+    try:
+        return json.loads(GOLD_ANSWER_PATH.read_text())
+    except Exception:
+        return {}
 
 
 @dataclass
@@ -50,11 +62,16 @@ async def verify_with_llm(
 
     client = anthropic.AsyncAnthropic(api_key=api_key)
 
+    expected_text = task.expected
+    gold_answers = _load_gold_answers()
+    if task.id in gold_answers:
+        expected_text = gold_answers[task.id]
+
     prompt = f"""You are verifying a browser automation task result.
 
 TASK: {task.prompt}
 
-EXPECTED: {task.expected}
+EXPECTED: {expected_text}
 
 AGENT OUTPUT:
 {agent_output[-8000:]}

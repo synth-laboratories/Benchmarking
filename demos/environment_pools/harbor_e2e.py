@@ -60,6 +60,32 @@ if not API_KEY:
     print("ERROR: Set SYNTH_API_KEY or pass --api-key")
     sys.exit(1)
 
+def _default_task_ref() -> dict[str, str]:
+    dataset = os.environ.get("ENV_POOL_TASK_DATASET", "env-pools-demo")
+    task_id = os.environ.get("ENV_POOL_TASK_ID", "harbor-e2e")
+    version = os.environ.get("ENV_POOL_TASK_VERSION")
+    ref: dict[str, str] = {"dataset": dataset, "task_id": task_id}
+    if version:
+        ref["version"] = version
+    return ref
+
+
+def _default_agent() -> dict[str, str]:
+    harness = os.environ.get("ENV_POOL_AGENT_HARNESS", "opencode")
+    harness_version = os.environ.get("ENV_POOL_AGENT_VERSION")
+    model_id = os.environ.get("ENV_POOL_AGENT_MODEL_ID", "gpt-4o-mini")
+    agent: dict[str, str] = {"harness": harness}
+    if harness_version:
+        agent["harness_version"] = harness_version
+    if model_id:
+        agent["model_id"] = model_id
+    return agent
+
+
+def _task_app_url() -> str | None:
+    value = os.environ.get("ENV_POOL_TASK_APP_URL", "").strip()
+    return value or None
+
 # ---------------------------------------------------------------------------
 # Oracle solution
 # ---------------------------------------------------------------------------
@@ -166,40 +192,48 @@ def main():
     try:
         # 2. Submit rollout
         print("\n2. Submitting rollout...")
-        r = create_rollout(
-            **common(),
-            request={
-                "pool_id": pool_id,
-                "environment": {"backend": "harbor", "docker_image": SNAPSHOT},
-                "harbor": {
-                    "input": {
-                        "seed": 42,
-                        "task_id": "crafter-achievement",
-                        "trace_correlation_id": "harbor_e2e_demo",
-                        "agent_solution": oracle_solution,
-                        "eval_script": EVAL_RUNNER,
-                        "snapshot_id": SNAPSHOT,
-                    },
-                    "deployment": {
-                        "entrypoint": ENTRYPOINT,
-                        "entrypoint_mode": "file",
-                        "env_vars": {},
-                        "limits": {"timeout_s": args.timeout, "memory_mb": 8192},
-                        "snapshot_id": SNAPSHOT,
-                    },
+        rollout_request = {
+            "task_ref": _default_task_ref(),
+            "agent": _default_agent(),
+            "environment": {"backend": "harbor", "docker_image": SNAPSHOT},
+            "pool_id": pool_id,
+            "harbor": {
+                "input": {
+                    "seed": 42,
+                    "task_id": "crafter-achievement",
+                    "trace_correlation_id": "harbor_e2e_demo",
+                    "agent_solution": oracle_solution,
+                    "eval_script": EVAL_RUNNER,
+                    "snapshot_id": SNAPSHOT,
+                },
+                "deployment": {
+                    "entrypoint": ENTRYPOINT,
+                    "entrypoint_mode": "file",
+                    "env_vars": {},
+                    "limits": {"timeout_s": args.timeout, "memory_mb": 8192},
+                    "snapshot_id": SNAPSHOT,
                 },
             },
+        }
+        task_app_url = _task_app_url()
+        if task_app_url:
+            rollout_request["task_app_url"] = task_app_url
+        r = create_rollout(
+            **common(),
+            request=rollout_request,
             timeout=30.0,
         )
-        trial_id = r["trial_id"]
-        print(f"   Trial: {trial_id} ({r['status']})")
+        rollout_id = r.get("rollout_id") or r.get("trial_id")
+        if not rollout_id:
+            raise RuntimeError("rollout response missing rollout_id")
+        print(f"   Rollout: {rollout_id} ({r['status']})")
 
         # 3. Poll until done
         print("\n3. Polling...")
         s = {}
         for i in range(120):
             time.sleep(5)
-            s = get_rollout(trial_id, **common())
+            s = get_rollout(rollout_id, **common())
             st = s.get("status", "?")
             elapsed = (i + 1) * 5
             print(f"   [{elapsed:4d}s] {st}")
@@ -207,7 +241,7 @@ def main():
                 break
         else:
             print("   TIMEOUT")
-            s = get_rollout(trial_id, **common())
+            s = get_rollout(rollout_id, **common())
 
         # 4. Print results
         print("\n" + "=" * 60)

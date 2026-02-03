@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run the Banking77 GEPA demo end-to-end via Harbor LocalAPI deploy.
+"""Run the Banking77 GEPA demo end-to-end via managed LocalAPI deploy.
 
-Unlike run_demo.py, this script deploys the Banking77 LocalAPI to Harbor (cloud),
-so no local server, tunnel, or cloudflared binary is needed.
+Unlike run_demo.py, this script deploys the Banking77 LocalAPI to the managed
+cloud backend (Modal), so no local server, tunnel, or cloudflared binary is needed.
 
 Usage:
     uv run python demos/gepa_banking77/run_demo_async.py
@@ -10,8 +10,11 @@ Usage:
 import asyncio
 import json
 import os
+import shutil
+import tempfile
 import time
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -46,28 +49,64 @@ def format_duration(seconds: float) -> str:
     return f"{mins}m {secs}s"
 
 
+def _stage_localapi_context(target_dir: Path) -> None:
+    demo_dir = Path(__file__).resolve().parent
+    repo_root = demo_dir.parents[2]
+
+    shutil.copy2(demo_dir / "localapi_banking77.py", target_dir / "localapi_banking77.py")
+    shutil.copy2(demo_dir / "Dockerfile.banking77-localapi", target_dir / "Dockerfile.banking77-localapi")
+
+    synth_ai_src = repo_root / "synth-ai" / "synth_ai"
+    synth_ai_core_assets = repo_root / "synth-ai" / "synth_ai_core" / "assets"
+
+    ignore = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")
+    synth_ai_dst = target_dir / "synth_ai"
+    synth_ai_dst.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(synth_ai_src / "__init__.py", synth_ai_dst / "__init__.py")
+    if (synth_ai_src / "__main__.py").exists():
+        shutil.copy2(synth_ai_src / "__main__.py", synth_ai_dst / "__main__.py")
+
+    shutil.copytree(synth_ai_src / "data", synth_ai_dst / "data", ignore=ignore)
+    (synth_ai_dst / "sdk").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(synth_ai_src / "sdk" / "__init__.py", synth_ai_dst / "sdk" / "__init__.py")
+    shutil.copytree(
+        synth_ai_src / "sdk" / "localapi",
+        synth_ai_dst / "sdk" / "localapi",
+        ignore=ignore,
+    )
+
+    (target_dir / "synth_ai_core").mkdir(parents=True, exist_ok=True)
+    shutil.copytree(synth_ai_core_assets, target_dir / "synth_ai_core" / "assets")
+
+
 # ---------------------------------------------------------------------------
 # Deploy
 # ---------------------------------------------------------------------------
 
 def deploy_banking77() -> LocalAPIDeployResult:
-    """Deploy the Banking77 LocalAPI to Harbor and wait until ready."""
-    print("Deploying Banking77 LocalAPI to Harbor...", flush=True)
-    result = deploy_localapi(
-        name="banking77-gepa-demo",
-        dockerfile_path="demos/gepa_banking77/Dockerfile.banking77-localapi",
-        context_dir="demos/gepa_banking77",
-        entrypoint="python /app/harbor_localapi_runner.py --stdio",
-        entrypoint_mode="stdio",
-        description="Banking77 intent classification LocalAPI for GEPA demo",
-        env_vars={"HF_HOME": "/tmp/hf", "BANKING77_LOG_LEVEL": "info"},
-        limits=HarborLimits(timeout_s=600, cpu_cores=2, memory_mb=4096),
-        backend_url=SYNTH_API_BASE,
-        api_key=API_KEY,
-        wait_for_ready=True,
-        build_timeout_s=600.0,
-    )
-    print(f"Harbor deployment ready: {result.deployment_name} (status={result.status})")
+    """Deploy the Banking77 LocalAPI to the managed cloud and wait until ready."""
+    print("Deploying Banking77 LocalAPI to managed cloud...", flush=True)
+    deployment_name = f"banking77-gepa-demo-{int(time.time())}"
+    with tempfile.TemporaryDirectory(prefix="banking77_localapi_") as tmp_dir:
+        context_dir = Path(tmp_dir)
+        _stage_localapi_context(context_dir)
+        result = deploy_localapi(
+            name=deployment_name,
+            dockerfile_path="Dockerfile.banking77-localapi",
+            context_dir=str(context_dir),
+            entrypoint="uvicorn localapi_banking77:app --host 0.0.0.0 --port 8000",
+            entrypoint_mode="command",
+            description="Banking77 intent classification LocalAPI for GEPA demo",
+            env_vars={"HF_HOME": "/tmp/hf", "BANKING77_LOG_LEVEL": "info"},
+            limits=HarborLimits(timeout_s=600, cpu_cores=2, memory_mb=4096),
+            backend_url=SYNTH_API_BASE,
+            api_key=API_KEY,
+            wait_for_ready=True,
+            build_timeout_s=600.0,
+            provider="cloud",
+            port=8000,
+        )
+    print(f"LocalAPI deployment ready: {result.deployment_id} (status={result.status})")
     print(f"  task_app_url: {result.task_app_url}")
     return result
 
@@ -278,7 +317,7 @@ async def run_eval_job(
     seeds: list[int],
     mode: str,
 ) -> EvalResult:
-    """Run an eval job against a Harbor-deployed LocalAPI."""
+    """Run an eval job against a managed LocalAPI."""
     config = EvalJobConfig(
         task_app_url=task_app_url,
         backend_url=SYNTH_API_BASE,
@@ -440,7 +479,7 @@ async def main():
     timings: dict[str, float] = {}
     total_start = time.time()
 
-    # ── 1. Deploy Banking77 LocalAPI to Harbor ──────────────────────────
+    # ── 1. Deploy Banking77 LocalAPI to managed cloud ───────────────────
     deploy_start = time.time()
     deploy_result = await asyncio.to_thread(deploy_banking77)
     task_app_url = deploy_result.task_app_url
@@ -454,7 +493,7 @@ async def main():
     pl_job = PromptLearningJob.from_dict(
         config_dict=deepcopy(config_body),
         backend_url=SYNTH_API_BASE,
-        skip_health_check=True,  # Harbor URL is backend-internal
+        skip_health_check=False,
     )
 
     job_id = await asyncio.to_thread(pl_job.submit)
@@ -601,7 +640,7 @@ async def main():
         print(f"FORMAL EVAL JOBS (test split, seeds {eval_seeds[0]}-{eval_seeds[-1]})")
         print("=" * 60)
 
-        # Both baseline and optimized eval use the same Harbor deployment
+        # Both baseline and optimized eval use the same managed deployment
         print("\nRunning BASELINE eval job...")
         eval_start = time.time()
         baseline_result = await run_eval_job(
@@ -676,7 +715,7 @@ async def main():
     print("TIMING SUMMARY")
     print("=" * 60)
     if "deploy" in timings:
-        print(f"  Harbor deploy:      {format_duration(timings['deploy'])}")
+        print(f"  LocalAPI deploy:    {format_duration(timings['deploy'])}")
     if "optimization" in timings:
         print(f"  GEPA optimization:  {format_duration(timings['optimization'])}")
     if "baseline_eval" in timings:

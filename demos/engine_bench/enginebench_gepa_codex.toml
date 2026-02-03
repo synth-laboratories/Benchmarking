@@ -51,7 +51,7 @@ timeout = 600
 [prompt_learning.gepa.unified_optimization]
 enable_task_app_context_overrides = true
 optimization_target = "unified"
-mutable_artifacts = ["system_prompt", "agents_md", "codex_skills"]
+mutable_files = ["system_prompt", "agents_md", "codex_skills"]
 
 [prompt_learning.policy]
 model = "gpt-5-nano"

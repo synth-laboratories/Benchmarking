@@ -16,6 +16,13 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
+from localapi_engine_bench import (
+    _unwrap_json_content,
+    detect_output_failures,
+    validate_agents_md,
+    validate_codex_skills,
+)
+
 
 # =============================================================================
 # CONTEXT OVERRIDE HELPERS (Daytona)
@@ -853,22 +860,64 @@ class DaytonaRolloutRunner:
         Returns: (agents_md_override, codex_skills_override, extra_env_vars, override_results)
         """
         if not overrides:
+            print("  [CTX] No context_overrides in Daytona request", flush=True)
             return None, None, {}, None
+
+        print(f"  [CTX] Daytona context_overrides present: {len(overrides)} override(s)", flush=True)
 
         file_artifacts: dict[str, str] = {}
         env_vars: dict[str, str] = {}
         preflight_scripts: list[str] = []
 
-        for override in overrides:
+        for i, override in enumerate(overrides):
             data = _normalize_override(override)
-            file_artifacts.update(data.get("file_artifacts") or {})
-            env_vars.update(data.get("env_vars") or {})
+            fa = data.get("file_artifacts") or {}
+            ev = data.get("env_vars") or {}
+            print(
+                f"    [CTX] override[{i}]: file_artifacts={len(fa)} env_vars={len(ev)}",
+                flush=True,
+            )
+            file_artifacts.update(fa)
+            env_vars.update(ev)
             script = data.get("preflight_script")
             if isinstance(script, str) and script.strip():
                 preflight_scripts.append(script)
 
+        # JSON-unwrap all file_artifacts content
+        for key in list(file_artifacts.keys()):
+            if isinstance(file_artifacts[key], str):
+                file_artifacts[key] = _unwrap_json_content(file_artifacts[key], key)
+
         agents_md_override = file_artifacts.get("AGENTS.md")
         codex_skills_override = file_artifacts.get(".codex/skills.yaml")
+
+        # Validate extracted overrides
+        validation_errors: list[dict[str, Any]] = []
+        if agents_md_override:
+            ok, agents_md_override, err = validate_agents_md(agents_md_override)
+            if not ok:
+                print(f"  [ARTIFACT] VALIDATION FAILED agents_md (Daytona): {err}", flush=True)
+                validation_errors.append({
+                    "error_type": "validation",
+                    "message": err or "invalid",
+                    "target": "AGENTS.md",
+                })
+                agents_md_override = None
+            else:
+                print(f"  [ARTIFACT] agents_md valid ({len(agents_md_override)} chars)", flush=True)
+
+        if codex_skills_override:
+            ok, codex_skills_override, err = validate_codex_skills(codex_skills_override)
+            if not ok:
+                print(f"  [ARTIFACT] VALIDATION FAILED codex_skills (Daytona): {err}", flush=True)
+                validation_errors.append({
+                    "error_type": "validation",
+                    "message": err or "invalid",
+                    "target": ".codex/skills.yaml",
+                })
+                codex_skills_override = None
+            else:
+                print(f"  [ARTIFACT] codex_skills valid ({len(codex_skills_override)} chars)", flush=True)
 
         file_status: dict[str, dict[str, Any]] = {}
         errors: list[dict[str, Any]] = []
@@ -958,6 +1007,9 @@ class DaytonaRolloutRunner:
                     }
                 )
                 print(f"[DaytonaRollout] Preflight failed: {result.get('output')}")
+
+        # Merge validation errors
+        errors.extend(validation_errors)
 
         overall_status = "applied"
         if errors and (file_status or env_status or preflight_result):
@@ -1073,7 +1125,20 @@ codex exec --yolo --skip-git-repo-check -m {model} "$(cat /app/prompt.txt)"
         output_preview = result["output"][:1000] if result["output"] else "(no output)"
         print(f"[DaytonaRollout] Codex exit_code={result.get('exit_code', 'unknown')} success={result['success']}")
         print(f"[DaytonaRollout] Codex output preview:\n{output_preview}")
-        
+
+        # [OUTPUT] Detect failure patterns in agent output
+        failures = detect_output_failures(result.get("output", ""))
+        if failures:
+            print(
+                f"  [OUTPUT] WARNING (Daytona codex): detected failure patterns: {failures}",
+                flush=True,
+            )
+        if "todo!()" in result.get("output", ""):
+            print(
+                "  [OUTPUT] WARNING (Daytona codex): todo!() still in output",
+                flush=True,
+            )
+
         return {
             "success": result["success"],
             "stdout": result["output"],

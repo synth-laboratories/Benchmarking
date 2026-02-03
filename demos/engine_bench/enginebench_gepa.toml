@@ -63,6 +63,11 @@ minibatch_size = 6
 [prompt_learning.gepa.proposer]
 model = "claude-opus-4"
 
+[prompt_learning.gepa.unified_optimization]
+enable_task_app_context_overrides = true
+optimization_target = "unified"
+mutable_files = ["system_prompt", "agents_md", "codex_skills"]
+
 [prompt_learning.policy]
 model = "gpt-4.1-mini"
 provider = "openai"
@@ -85,3 +90,38 @@ Output requirements:
 1. ACTUALLY EDIT files - replace TODO stubs with working code
 2. Make sure code compiles (`cargo check`)
 3. Make sure tests pass (`cargo test`)"""
+
+agents_md = """# Agent Instructions
+
+## Pokemon TCG Card Implementation
+
+You are implementing Pokemon TCG card effects in Rust. The stub file contains `todo!()` macros.
+
+### Workflow
+1. Read the stub file to find todo!() functions
+2. Replace each todo!() with correct implementation
+3. Run `cargo check` to verify compilation
+4. Run `cargo test` to verify correctness
+
+### Key Patterns
+- Use `def_id_matches(&card.def_id, "DF", N)` to identify cards
+- Implement hooks: attack_override, power_effect, between_turns
+- Use `game.queue_prompt()` for player choices
+- Return `AttackOverrides::default()` when card doesn't apply
+"""
+
+codex_skills = """skills:
+  - name: implement_card
+    description: Implement a Pokemon TCG card from stub with todo!() macros
+    steps:
+      - Read the stub file to understand the card structure
+      - Replace todo!() with working Rust implementations
+      - Run cargo check to verify compilation
+      - Run cargo test to verify correctness
+  - name: debug_rust
+    description: Debug Rust compilation or test failures
+    steps:
+      - Read the error output carefully
+      - Check types, imports, and function signatures
+      - Fix the issue and re-run cargo check/test
+"""

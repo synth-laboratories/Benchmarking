@@ -50,6 +50,10 @@ results/
 *.txt
 *.log
 
+# Keep required LinkedIn gold files
+!demos/linkedin_bench/data/gold_answers.json
+!demos/linkedin_bench/data/gold_report.json
+
 # Jupyter
 .ipynb_checkpoints/
 *_executed.ipynb
