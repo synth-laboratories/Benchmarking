@@ -1,0 +1,58 @@
+# Dockerfile for EngineBench Task App (amd64 compatible)
+# Avoids Rust compilation by installing synth-ai core components separately
+#
+# Build:  docker buildx build --platform linux/amd64 -f Dockerfile.task_app_amd64 -t joshpurtells/synth-engine-bench-taskapp:v1-amd64 --push .
+
+FROM python:3.11-slim
+
+# Install system deps (no Rust needed)
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install uv for fast Python package management
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+WORKDIR /app
+
+# Install Python deps separately
+# These are the pure-Python components needed by the task app
+RUN uv pip install --system \
+    fastapi \
+    uvicorn \
+    httpx \
+    pyyaml \
+    pydantic \
+    python-dotenv \
+    aiofiles
+
+# Install synth-ai from git with only the pure Python components
+# Using --no-build-isolation to skip Rust compilation
+RUN uv pip install --system --no-build-isolation \
+    "synth-ai @ git+https://github.com/synth-laboratories/synth-ai.git@main" \
+    2>/dev/null || \
+    uv pip install --system synth-ai-core synth-ai-core-types || \
+    echo "Warning: synth-ai not installed, using local modules"
+
+# Copy the engine_bench module (task app code)
+COPY __init__.py /app/engine_bench/__init__.py
+COPY localapi_engine_bench.py /app/engine_bench/localapi_engine_bench.py
+COPY daytona_helper.py /app/engine_bench/daytona_helper.py
+COPY run.py /app/engine_bench/run.py
+
+# Fix imports in localapi_engine_bench.py for packaged module
+RUN sed -i 's/from daytona_helper import/from engine_bench.daytona_helper import/g' /app/engine_bench/localapi_engine_bench.py
+
+# Create __main__.py to allow `python -m engine_bench`
+RUN echo 'from engine_bench.localapi_engine_bench import app; import uvicorn; import os; uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))' > /app/engine_bench/__main__.py
+
+# Clone engine-bench repo (needed for instances/gold implementations)
+RUN git clone --depth 1 https://github.com/JoshuaPurtell/engine-bench.git /root/.cache/engine-bench
+
+# Verify setup
+RUN python3 -c "import fastapi, uvicorn; print('Core deps OK')"
+
+EXPOSE 8000
+CMD ["python", "-m", "engine_bench"]

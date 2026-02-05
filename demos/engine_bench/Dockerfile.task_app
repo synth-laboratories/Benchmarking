@@ -1,0 +1,54 @@
+# Dockerfile for EngineBench Task App (Hosted Task App Server)
+# This runs the localapi_engine_bench.py FastAPI server that handles
+# /health, /info, and /rollout endpoints for Environment Pools.
+#
+# Build:  docker build -f Dockerfile.task_app -t ghcr.io/synth-labs/engine-bench:latest .
+# Push:   docker push ghcr.io/synth-labs/engine-bench:latest
+
+FROM python:3.11-slim
+
+# Install system deps including build tools for Rust extension
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Rust (required for synth-ai's Rust extension)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:$PATH"
+
+# Install uv for fast Python package management
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+WORKDIR /app
+
+# Install Python deps
+# Note: synth-ai includes fastapi, uvicorn, httpx
+RUN uv pip install --system synth-ai pyyaml
+
+# Copy the engine_bench module (task app code)
+COPY __init__.py /app/engine_bench/__init__.py
+COPY localapi_engine_bench.py /app/engine_bench/localapi_engine_bench.py
+COPY daytona_helper.py /app/engine_bench/daytona_helper.py
+COPY run.py /app/engine_bench/run.py
+
+# Fix imports in localapi_engine_bench.py for packaged module
+# (import from daytona_helper -> from engine_bench.daytona_helper)
+RUN sed -i 's/from daytona_helper import/from engine_bench.daytona_helper import/g' /app/engine_bench/localapi_engine_bench.py
+
+# Create __main__.py to allow `python -m engine_bench.run`
+RUN echo 'from engine_bench.localapi_engine_bench import app; import uvicorn; import os; uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))' > /app/engine_bench/__main__.py
+
+# Clone engine-bench repo (needed for instances/gold implementations)
+RUN git clone --depth 1 https://github.com/JoshuaPurtell/engine-bench.git /root/.cache/engine-bench
+
+# Verify setup
+RUN python3 -c "import fastapi, uvicorn, synth_ai; print('Python deps OK')"
+
+# The entrypoint starts the task app server
+EXPOSE 8000
+CMD ["python", "-m", "engine_bench.run"]
