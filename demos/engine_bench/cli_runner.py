@@ -24,13 +24,22 @@ from unittest.mock import MagicMock
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Add parent dir to path if needed
-sys.path.insert(0, str(Path(__file__).parent))
+# Add /app to path for Daytona sandbox environment
+# In sandbox: /app/engine_bench/cli_runner.py needs to import engine_bench.localapi_engine_bench
+# Locally: need to import from same directory
+script_dir = Path(__file__).parent
+sys.path.insert(0, str(script_dir))
+sys.path.insert(0, str(script_dir.parent))  # /app in sandbox, or parent dir locally
 
 from synth_ai.sdk.task.contracts import RolloutRequest
 
-# Import the run_rollout function from localapi_engine_bench
-from localapi_engine_bench import run_rollout
+# Import the run_rollout function - try both import patterns
+try:
+    # Sandbox path (after Dockerfile sed rewrites imports)
+    from engine_bench.localapi_engine_bench import run_rollout
+except ImportError:
+    # Local dev path
+    from localapi_engine_bench import run_rollout
 
 
 async def main():
