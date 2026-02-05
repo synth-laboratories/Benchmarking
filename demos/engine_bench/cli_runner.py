@@ -68,10 +68,35 @@ async def main():
         return
     
     # Parse the rollout request
+    # Harbor pool rollout sends input in this format:
+    # {
+    #   "run_id": "...",
+    #   "trace_correlation_id": "...",
+    #   "seed": 0,
+    #   "env_name": "...",
+    #   "env_config": {...},
+    #   "policy_config": {...},
+    #   "task_app_request": { "env": {...}, "policy": {...}, ... }
+    # }
     try:
-        # The input may be a direct RolloutRequest or wrapped in env/policy from Harbor
-        if "env" in input_data and "policy" in input_data:
-            # Harbor format: extract and build RolloutRequest
+        # Check for Harbor pool rollout format (has run_id and seed at top level)
+        if "run_id" in input_data and "seed" in input_data:
+            logger.info("Detected Harbor pool rollout format")
+            seed = input_data.get("seed", 0)
+            policy_config = input_data.get("policy_config", {})
+            
+            # Try to get context_overrides from task_app_request
+            task_app_req = input_data.get("task_app_request", {})
+            context_overrides = task_app_req.get("context_overrides")
+            
+            request = RolloutRequest(
+                instance_id=str(seed),
+                policy_config=policy_config,
+                context_override=context_overrides[0] if context_overrides else None,
+            )
+        # Check for direct API format (has env and policy at top level)
+        elif "env" in input_data and "policy" in input_data:
+            logger.info("Detected direct API format with env/policy")
             env = input_data.get("env", {})
             policy = input_data.get("policy", {})
             
@@ -81,12 +106,14 @@ async def main():
                 context_override=input_data.get("context_override"),
             )
         else:
-            # Direct RolloutRequest format
+            # Try to construct RolloutRequest directly
+            logger.info("Attempting direct RolloutRequest construction")
             request = RolloutRequest(**input_data)
         
         logger.info(f"Parsed RolloutRequest: instance_id={request.instance_id}")
     except Exception as e:
         logger.error(f"Failed to parse RolloutRequest: {e}")
+        logger.error(f"Input data keys: {list(input_data.keys())}")
         result = {"error": f"Invalid request format: {e}", "success": False}
         output_path.write_text(json.dumps(result, indent=2))
         return
