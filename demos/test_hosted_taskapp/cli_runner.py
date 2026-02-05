@@ -103,11 +103,16 @@ def main():
     elapsed = time.time() - start
 
     # 3. Return success response
+    # Harbor expects: reward_info.outcome_reward for the primary reward
+    # See rhodes-core/src/harbor.rs parse_harbor_metrics()
     result = {
-        "success": "SUCCESS",
-        "outcome_reward": 1.0,
+        "success": True,
+        "reward_info": {
+            "outcome_reward": 1.0,
+        },
         "metrics": {
             "outcome_reward": 1.0,
+            "reward_mean": 1.0,
             "details": {
                 "format_detected": format_detected,
                 "trace_correlation_id": trace_id,
